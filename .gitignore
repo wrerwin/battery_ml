@@ -1,0 +1,27 @@
+# Data — not committed (too large / not ours to host)
+battery_archive_data/
+data/
+
+# EDA outputs (regenerable)
+eda_output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv / virtual environments
+.venv/
+.uv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
