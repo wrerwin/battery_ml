@@ -5,6 +5,9 @@ data/
 # EDA outputs (regenerable)
 eda_output/
 
+# Cached feature Parquet files (regenerable)
+features/
+
 # Python
 __pycache__/
 *.py[cod]
