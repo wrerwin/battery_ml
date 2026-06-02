@@ -6,6 +6,7 @@
 #   "matplotlib",
 #   "seaborn",
 #   "numpy",
+#   "pydantic",
 # ]
 # ///
 """
@@ -47,15 +48,23 @@ def parse_filename(name: str) -> dict:
     stem = Path(name).stem
 
     # dataset prefix (first token before first underscore after dataset name)
-    dataset_map = {
-        "CALCE": "CALCE",
-        "HNEI": "HNEI",
-        "MICH": "Michigan",
-        "OX": "Oxford",
-        "SNL": "SNL",
-        "UL-PUR": "UL-Purdue",
-    }
-    dataset = next((v for k, v in dataset_map.items() if stem.startswith(k)), "Unknown")
+    # SNL is split by chemistry since they are distinct experimental populations
+    if stem.startswith("SNL"):
+        for chem in ["LFP", "NCA", "NMC"]:
+            if f"_{chem}_" in stem:
+                dataset = f"SNL_{chem}"
+                break
+        else:
+            dataset = "SNL"
+    else:
+        dataset_map = {
+            "CALCE": "CALCE",
+            "HNEI": "HNEI",
+            "MICH": "Michigan",
+            "OX": "Oxford",
+            "UL-PUR": "UL-Purdue",
+        }
+        dataset = next((v for k, v in dataset_map.items() if stem.startswith(k)), "Unknown")
 
     # chemistry from filename tokens
     chemistry = None
