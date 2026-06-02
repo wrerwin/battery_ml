@@ -309,7 +309,14 @@ class Battery(BaseModel):
     @property
     def end_of_life_cycle(self) -> Optional[int]:
         """
-        First cycle index at which capacity retention drops below 80%.
+        First cycle index at which capacity retention drops below 80% and
+        stays below for at least 3 consecutive cycles.
+
+        The consecutive-cycles requirement filters out anomalous low-capacity
+        cycles caused by diagnostic pulses, interrupted cycles, or data
+        artefacts — all of which are common in Battery Archive datasets and
+        would otherwise trigger a false EOL on cycle 1 or 2.
+
         Returns None if the cell never reaches 80% fade or data is insufficient.
         """
         nom = self.nominal_capacity_ah
@@ -317,11 +324,30 @@ class Battery(BaseModel):
             reg = self.regular_cycles
             if len(reg) < 3:
                 return None
-            nom = float(np.mean([c.discharge_capacity_ah for c in reg[:3]]))
+            # Use median of first 10 non-zero cycles for a robust nominal estimate
+            early_caps = [
+                c.discharge_capacity_ah for c in reg[:10]
+                if c.discharge_capacity_ah > 0
+            ]
+            if len(early_caps) < 3:
+                return None
+            nom = float(np.median(early_caps))
+
         threshold = 0.8 * nom
+        consecutive = 0
+        first_below: Optional[int] = None
+
         for c in self.cycles:
-            if c.discharge_capacity_ah < threshold:
-                return c.cycle_index
+            if c.discharge_capacity_ah > 0 and c.discharge_capacity_ah < threshold:
+                if first_below is None:
+                    first_below = c.cycle_index
+                consecutive += 1
+                if consecutive >= 3:
+                    return first_below
+            else:
+                consecutive = 0
+                first_below = None
+
         return None
 
     # ── Timeseries access ─────────────────────────────────────────────────────
