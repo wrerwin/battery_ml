@@ -31,3 +31,7 @@ Thumbs.db
 
 # Experiment results (regenerable)
 results/
+
+# Local dev helpers
+.env
+*.pth
