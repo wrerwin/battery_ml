@@ -42,4 +42,4 @@ for name, model in models.items():
 print("\n" + "="*55)
 print("Calibration comparison across all models")
 print("="*55)
-compare_calibration(results, run_tag="calce_hnei")
+compare_calibration(results, run_tag="calce_hnei", thresholds=[500, 1000, 1500])
