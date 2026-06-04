@@ -635,6 +635,8 @@ class Reporter:
         self.plot_feature_importances()
         self.plot_eol_distributions()
         self.plot_survival_curves()
+        self.plot_calibration_curve()
+        self.plot_interval_widths()
         self.save_summary_json()
         self.save_predictions_csv()
         print("Done.")
@@ -798,6 +800,171 @@ class Reporter:
 
     # ── Text / data outputs ───────────────────────────────────────────────────
 
+    # ── Calibration ───────────────────────────────────────────────────────────
+
+    def calibration_metrics(self) -> dict:
+        """
+        Compute scalar calibration metrics from OOF predictions.
+
+        Returns
+        -------
+        dict with:
+          picp_80  : fraction of actuals in [q10, q90]  (target ≈ 0.80)
+          picp_50  : fraction of actuals in [q25, q75]  (target ≈ 0.50)
+          mpiw_80  : mean width of [q10, q90] interval in cycles
+          winkler_80: mean Winkler score for 80% PI (lower = better)
+          calibration_error: mean |observed_coverage - nominal_coverage|
+                             across all available quantile levels
+        """
+        oof = self.result.oof_predictions.dropna(subset=["actual_eol"])
+        y = oof["actual_eol"].values
+
+        metrics = {}
+
+        # Coverage for 80% PI [q10, q90]
+        if "q10" in oof and "q90" in oof:
+            lo, hi = oof["q10"].values, oof["q90"].values
+            in_interval = (y >= lo) & (y <= hi)
+            metrics["picp_80"] = float(in_interval.mean())
+            metrics["mpiw_80"] = float((hi - lo).mean())
+            # Winkler score (alpha = 0.20 for 80% PI)
+            alpha = 0.20
+            width = hi - lo
+            penalty = np.where(
+                y < lo, (2 / alpha) * (lo - y),
+                np.where(y > hi, (2 / alpha) * (y - hi), 0.0)
+            )
+            metrics["winkler_80"] = float((width + penalty).mean())
+
+        # Coverage for 50% PI [q25, q75]
+        if "q25" in oof and "q75" in oof:
+            lo50, hi50 = oof["q25"].values, oof["q75"].values
+            metrics["picp_50"] = float(((y >= lo50) & (y <= hi50)).mean())
+            metrics["mpiw_50"] = float((hi50 - lo50).mean())
+
+        # Calibration error: |observed - nominal| averaged over quantile levels
+        q_cols = {0.10: "q10", 0.25: "q25", 0.50: "q50", 0.75: "q75", 0.90: "q90"}
+        errors = []
+        for nominal, col in q_cols.items():
+            if col in oof.columns:
+                observed = float((y <= oof[col].values).mean())
+                errors.append(abs(observed - nominal))
+        metrics["calibration_error"] = float(np.mean(errors)) if errors else float("nan")
+
+        return metrics
+
+    def plot_calibration_curve(self) -> None:
+        """
+        Reliability diagram: observed coverage vs nominal quantile level.
+
+        A perfectly calibrated model lies on the y = x diagonal.
+        Points above the diagonal → intervals are too wide (over-confident
+        in coverage, conservative).
+        Points below → intervals too narrow (under-coverage, overconfident).
+        """
+        plt = self._plt
+        oof = self.result.oof_predictions.dropna(subset=["actual_eol"])
+        y = oof["actual_eol"].values
+
+        q_cols = {0.10: "q10", 0.25: "q25", 0.50: "q50", 0.75: "q75", 0.90: "q90"}
+        available = {nom: col for nom, col in q_cols.items() if col in oof.columns}
+
+        if not available:
+            return
+
+        nominal = list(available.keys())
+        observed = [float((y <= oof[col].values).mean()) for col in available.values()]
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.plot([0, 1], [0, 1], "k--", linewidth=1, label="Perfect calibration")
+        ax.plot(nominal, observed, "o-", color="steelblue", linewidth=2,
+                markersize=8, label="This model")
+
+        # Shade the over/under regions
+        ax.fill_between([0, 1], [0, 1], [1, 1], alpha=0.06, color="green",
+                        label="Conservative (over-covering)")
+        ax.fill_between([0, 1], [0, 0], [0, 1], alpha=0.06, color="red",
+                        label="Overconfident (under-covering)")
+
+        # Annotate each point
+        for nom, obs in zip(nominal, observed):
+            ax.annotate(f"{obs:.2f}", (nom, obs),
+                        textcoords="offset points", xytext=(6, 4), fontsize=8)
+
+        cal_err = self.calibration_metrics().get("calibration_error", float("nan"))
+        ax.set_xlabel("Nominal quantile level")
+        ax.set_ylabel("Observed coverage (fraction of actuals below quantile)")
+        ax.set_title(
+            f"Reliability diagram — {self.result.config.run_name}\n"
+            f"Mean calibration error: {cal_err:.3f}  "
+            f"(0 = perfect, 0.5 = useless)"
+        )
+        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+        ax.legend(fontsize=8)
+        plt.tight_layout()
+        fig.savefig(self.out_dir / "calibration_curve.png", dpi=150)
+        plt.close(fig)
+
+    def plot_interval_widths(self) -> None:
+        """
+        Distribution of 80% prediction interval widths [q10, q90].
+        Narrower = sharper (more informative) uncertainty estimates.
+        Annotates actual 80% coverage achieved.
+        """
+        plt = self._plt
+        oof = self.result.oof_predictions.dropna(subset=["actual_eol"])
+
+        if "q10" not in oof.columns or "q90" not in oof.columns:
+            return
+
+        widths = oof["q90"] - oof["q10"]
+        picp = self.calibration_metrics().get("picp_80", float("nan"))
+
+        fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+
+        # Left: histogram of widths
+        ax = axes[0]
+        ax.hist(widths, bins=min(15, len(widths)), color="steelblue", alpha=0.8,
+                edgecolor="white")
+        ax.axvline(widths.mean(), color="red", linestyle="--",
+                   label=f"Mean: {widths.mean():.0f} cycles")
+        ax.set_xlabel("80% PI width (cycles)")
+        ax.set_ylabel("Count")
+        ax.set_title("Interval width distribution")
+        ax.legend(fontsize=8)
+
+        # Right: actual vs interval — sorted by actual EOL
+        ax2 = axes[1]
+        oof_sorted = oof.sort_values("actual_eol").reset_index(drop=True)
+        x = np.arange(len(oof_sorted))
+        ax2.fill_between(x, oof_sorted["q10"], oof_sorted["q90"],
+                         alpha=0.35, color="steelblue", label="80% PI [q10–q90]")
+        ax2.plot(x, oof_sorted["q50"], color="steelblue", linewidth=1.5,
+                 label="Median prediction")
+        ax2.scatter(x, oof_sorted["actual_eol"], color="red", s=25, zorder=5,
+                    label="Actual EOL")
+
+        # Highlight misses
+        lo, hi = oof_sorted["q10"].values, oof_sorted["q90"].values
+        actual = oof_sorted["actual_eol"].values
+        misses = (actual < lo) | (actual > hi)
+        if misses.any():
+            ax2.scatter(x[misses], actual[misses], color="darkred", s=60,
+                        zorder=6, marker="x", label=f"Outside PI ({misses.sum()})")
+
+        ax2.set_xlabel("Battery (sorted by actual EOL)")
+        ax2.set_ylabel("EOL cycle")
+        ax2.set_title(
+            f"Predicted intervals vs actual\n"
+            f"Actual 80% PI coverage: {picp:.1%}  (target 80%)"
+        )
+        ax2.legend(fontsize=8)
+
+        plt.suptitle(self.result.config.run_name, fontsize=10)
+        plt.tight_layout()
+        fig.savefig(self.out_dir / "interval_widths.png", dpi=150)
+        plt.close(fig)
+
     def save_summary_json(self) -> None:
         cfg = self.result.config
         summary = {
@@ -816,6 +983,9 @@ class Reporter:
                 "mae": round(self.result.mae, 2),
                 "rmse": round(self.result.rmse, 2),
                 "r2": round(self.result.r2, 4),
+            },
+            "calibration": {
+                k: round(v, 4) for k, v in self.calibration_metrics().items()
             },
             "fold_metrics": self.result.metrics_df().to_dict(orient="records"),
             "top_20_features": (
