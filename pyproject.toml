@@ -1,0 +1,20 @@
+[project]
+name = "battery-ml"
+version = "0.1.0"
+description = "Battery cycle life prediction with uncertainty quantification"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "seaborn",
+    "pydantic>=2",
+    "pyarrow",
+    "scikit-learn",
+    "lightgbm",
+]
+
+
+[tool.uv]
+package = false

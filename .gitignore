@@ -28,3 +28,10 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Experiment results (regenerable)
+results/
+
+# Local dev helpers
+.env
+*.pth
